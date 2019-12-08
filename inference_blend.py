@@ -25,6 +25,21 @@ import os
 
 warnings.filterwarnings("once")
 
+
+class Model:
+    def __init__(self, models):
+        self.models = models
+
+    def __call__(self, x):
+        res = []
+        x = x.cuda()
+        with torch.no_grad():
+            for m in self.models:
+                res.append(torch.sigmoid(m(x)))
+        res = torch.stack(res)
+        res = torch.mean(res, dim=0)
+        return res
+
 if __name__ == '__main__':
     """
     Example of usage:
@@ -111,80 +126,25 @@ if __name__ == '__main__':
     else:
         criterion = smp.utils.losses.BCEDiceLoss(eps=1.)
 
-    if args.multigpu:
-        model = nn.DataParallel(model)
-
-    if args.task == 'segmentation':
-        callbacks = [DiceCallback(), EarlyStoppingCallback(patience=10, min_delta=0.001), CriterionCallback()]
-    elif args.task == 'classification':
-        callbacks = [AUCCallback(class_names=['Fish', 'Flower', 'Gravel', 'Sugar'], num_classes=4),
-                     EarlyStoppingCallback(patience=10, min_delta=0.001), CriterionCallback()]
-
-    if args.gradient_accumulation:
-        callbacks.append(OptimizerCallback(accumulation_steps=args.gradient_accumulation))
-
-    checkpoint = utils.load_checkpoint(f'{logdir}/checkpoints/best.pth')
-    model.cuda()
-    utils.unpack_checkpoint(checkpoint, model=model)
-    #
-    #
-    runner = SupervisedRunner()
-    if args.train:
-        print('Training')
-        runner.train(
-            model=model,
-            criterion=criterion,
-            optimizer=optimizer,
-            main_metric='dice',
-            minimize_metric=False,
-            scheduler=scheduler,
-            loaders=loaders,
-            callbacks=callbacks,
-            logdir=logdir,
-            num_epochs=args.num_epochs,
-            verbose=True
-        )
-
-        with open(f'{logdir}/args.txt', 'w') as f:
-            for k, v in args.__dict__.items():
-                f.write(f'{k}: {v}' + '\n')
-
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    class_params = None
-
-    if args.optimize_postprocess:
-        print('POSTPROCESS')
-        del loaders['train']
-        checkpoint = utils.load_checkpoint(f'{logdir}/checkpoints/best.pth')
-        model.cuda()
-        utils.unpack_checkpoint(checkpoint, model=model)
-        runner = SupervisedRunner(model=model)
-        class_params = get_optimal_postprocess(loaders=loaders, runner=runner, logdir=logdir)
-        with open(f'{logdir}/class_params.json', 'w') as f:
-            json.dump(class_params, f)
-
     if args.make_prediction:
         print('MAKING PREDICTIONS')
+        model1 = get_model(model_type=args.segm_type, encoder=args.encoder, encoder_weights=args.encoder_weights,
+                          activation=None, task=args.task)
         loaders['test'] = test_loader
-        checkpoint = utils.load_checkpoint(f'{logdir}/checkpoints/best.pth')
-        # transforms = tta.Compose(
-        #     [
-        #         tta.HorizontalFlip(),
-        #         # tta.Rotate90(angles=[0, 180]),
-        #         # tta.Scale(scales=[1, 2, 4]),
-        #         #tta.Multiply(factors=[0.9, 1, 1.1]),
-        #     ]
-        # )
-        model.cuda()
-        utils.unpack_checkpoint(checkpoint, model=model)
-        #tta_model = tta.SegmentationTTAWrapper(model, transforms, merge_mode='mean')
-        #runner = SupervisedRunner(model=tta_model)
+        checkpoint = utils.load_checkpoint('/home/dex/Desktop/ml/cloud artgor/logs/weights/lb 6582/best.pth')
+        model1.cuda()
+        utils.unpack_checkpoint(checkpoint, model=model1)
 
+        model2 = get_model(model_type=args.segm_type, encoder=args.encoder, encoder_weights=args.encoder_weights,
+                          activation=None, task=args.task)
+        checkpoint = utils.load_checkpoint('/home/dex/Desktop/ml/cloud artgor/logs/weights/lb 6582/cont fitted/best.pth')
+        model2.cuda()
+        utils.unpack_checkpoint(checkpoint, model=model2)
+
+        model = Model([model1, model2])
         runner = SupervisedRunner(model=model)
-        if not class_params:
-            with open(f'{logdir}/class_params.json', 'r') as f:
-                class_params = json.load(f)
+
+        with open(f'{logdir}/class_params.json', 'r') as f:
+            class_params = json.load(f)
         print('prediction postprocess params', class_params)
-        predict(loaders=loaders, runner=runner, class_params=class_params, path=args.path, sub_name=sub_name)
+        predict_blend(loaders=loaders, runner=runner, class_params=class_params, path=args.path, sub_name=sub_name)
